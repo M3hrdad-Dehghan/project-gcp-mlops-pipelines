@@ -1,0 +1,287 @@
+{
+  "components": {
+    "comp-data-loader-component-v2": {
+      "executorLabel": "exec-data-loader-component-v2",
+      "inputDefinitions": {
+        "parameters": {
+          "cutoff_date": {
+            "parameterType": "STRING"
+          },
+          "dataset_id": {
+            "parameterType": "STRING"
+          },
+          "project_id": {
+            "parameterType": "STRING"
+          },
+          "source_table": {
+            "parameterType": "STRING"
+          },
+          "test_table": {
+            "parameterType": "STRING"
+          },
+          "train_table": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    },
+    "comp-evaluation-component-v2": {
+      "executorLabel": "exec-evaluation-component-v2",
+      "inputDefinitions": {
+        "parameters": {
+          "model_path": {
+            "parameterType": "STRING"
+          },
+          "project_id": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "NUMBER_DOUBLE"
+          }
+        }
+      }
+    },
+    "comp-train-arima-default-component-v2": {
+      "executorLabel": "exec-train-arima-default-component-v2",
+      "inputDefinitions": {
+        "parameters": {
+          "dataset_id": {
+            "parameterType": "STRING"
+          },
+          "model_name": {
+            "parameterType": "STRING"
+          },
+          "project_id": {
+            "parameterType": "STRING"
+          },
+          "source_table": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    }
+  },
+  "deploymentSpec": {
+    "executors": {
+      "exec-data-loader-component-v2": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "data_loader_component_v2"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'google-cloud-bigquery' 'pandas' 'db-dtypes' 'kfp==2.0.0' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef data_loader_component_v2(\n    project_id: str,\n    dataset_id: str,\n    source_table: str,\n    train_table: str,\n    test_table: str,\n    cutoff_date: str,\n) -> str:\n\n    # Try to import DataLoader from the project's logic_components package; if not present at runtime,\n    # fall back to an inline minimal implementation so the component can run in Vertex AI's container.\n    try:\n        from logic_components.data_loader import DataLoader\n    except Exception:\n        # Local inline fallback DataLoader class definition (minimal implementation)\n        import pandas as pd\n        from google.cloud import bigquery\n\n        class DataLoader:\n            def __init__(self, project_id: str, dataset_id: str, table_id: str, date_column: str = \"trip_date\") -> None:\n                self.project_id = project_id\n                self.dataset_id = dataset_id\n                self.table_id = table_id\n                self.date_column = date_column\n\n            def load_data(self) -> pd.DataFrame:\n                client = bigquery.Client(project=self.project_id)\n                table_ref = f\"{self.project_id}.{self.dataset_id}.{self.table_id}\"\n                query = f\"\"\"\n                    SELECT *\n                    FROM `{table_ref}`\n                    ORDER BY {self.date_column}\n                \"\"\"\n                df = client.query(query).to_dataframe()\n                return df\n\n            def train_test_split(self, df: pd.DataFrame, train_end_date: str):\n                df = df.copy()\n                df[self.date_column] = pd.to_datetime(df[self.date_column])\n                train_cutoff = pd.to_datetime(train_end_date)\n                train_df = df[df[self.date_column] <= train_cutoff].copy()\n                test_df = df[df[self.date_column] > train_cutoff].copy()\n                return train_df, test_df\n\n            def save_to_bigquery(self, df: pd.DataFrame, target_table: str, write_disposition: str = \"WRITE_TRUNCATE\") -> None:\n                client = bigquery.Client(project=self.project_id)\n                table_id = f\"{self.project_id}.{self.dataset_id}.{target_table}\"\n                job_config = bigquery.LoadJobConfig(write_disposition=write_disposition)\n                load_job = client.load_table_from_dataframe(df, table_id, job_config=job_config)\n                load_job.result()\n\n    loader = DataLoader(\n        project_id=project_id,\n        dataset_id=dataset_id,\n        table_id=source_table,\n    )\n\n    df = loader.load_data()\n    train_df, test_df = loader.train_test_split(df, cutoff_date)\n    loader.save_to_bigquery(train_df, train_table)\n    loader.save_to_bigquery(test_df, test_table)\n\n    print(f\"Train rows: {len(train_df)}, Test rows: {len(test_df)}\")\n\n    return train_table\n\n"
+          ],
+          "image": "python:3.10"
+        }
+      },
+      "exec-evaluation-component-v2": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "evaluation_component_v2"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'google-cloud-bigquery' 'pandas' 'pyarrow' 'db-dtypes' 'kfp==2.0.0' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef evaluation_component_v2(\n    project_id: str,\n    model_path: str,\n) -> float:\n    \"\"\"\n    Evaluate the trained BQML ARIMA model and return the AIC score (float).\n    This component tries to import the project's `logic_components` package; in case\n    it's not available in the runtime container, it provides a fallback implementation.\n    \"\"\"\n    import traceback\n\n    try:\n        try:\n            from logic_components.model_evaluate import ModelEvaluator\n        except Exception:\n            # fallback implementation using google-cloud-bigquery\n            from google.cloud import bigquery\n            import pandas as pd\n\n            class ModelEvaluator:\n                def __init__(self, project_id: str) -> None:\n                    self.project_id = project_id\n                    self.client = bigquery.Client(project=project_id)\n\n                def evaluate(self, model_path: str) -> dict:\n                    # Use the job.to_dataframe() helper if available\n                    query = f\"\"\"\n                    SELECT aic\n                    FROM ML.ARIMA_EVALUATE(MODEL `{model_path}`)\n                    LIMIT 1\n                    \"\"\"\n                    job = self.client.query(query)\n                    try:\n                        df = job.to_dataframe()\n                    except Exception:\n                        df = job.result().to_dataframe()\n\n                    if df.empty:\n                        raise RuntimeError(f\"No evaluation results found for model: {model_path}\")\n                    aic_value = float(df[\"aic\"].iloc[0])\n                    return {\"model\": model_path, \"aic\": aic_value}\n\n        evaluator = ModelEvaluator(project_id=project_id)\n        print(f\"[Eval] Evaluating model: {model_path}\")\n        result = evaluator.evaluate(model_path=model_path)\n        # Try to give an early hint if model exists in BQ (useful for diagnosing permission/missing model)\n        try:\n            parts = model_path.split('.')\n            if len(parts) == 3:\n                p, d, m = parts\n                check_query = f\"SELECT COUNT(*) as cnt FROM `{p}.{d}.INFORMATION_SCHEMA.MODELS` WHERE model_name = '{m}'\"\n                check_job = evaluator.client.query(check_query)\n                try:\n                    check_df = check_job.to_dataframe()\n                except Exception:\n                    check_df = check_job.result().to_dataframe()\n                has_model = int(check_df['cnt'].iloc[0]) > 0\n                print(f\"[Eval] model_exists: {has_model} for {model_path}\")\n            else:\n                print(f\"[Eval] Could not parse model_path for existence check: {model_path}\")\n        except Exception as e:\n            print(f\"[Eval] Error while checking model existence: {e}\")\n        aic_value = float(result.get(\"aic\"))\n        print(f\"AIC: {aic_value}\")\n        return aic_value\n    except Exception as e:\n        # Print stacktrace to logs for debug; re-raise so pipeline fails clearly\n        print(\"[Eval] Error during evaluation:\")\n        traceback.print_exc()\n        raise\n\n"
+          ],
+          "image": "python:3.10"
+        }
+      },
+      "exec-train-arima-default-component-v2": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "train_arima_default_component_v2"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'google-cloud-bigquery' 'kfp==2.0.0' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\npython3 -m kfp.components.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef train_arima_default_component_v2(\n    project_id: str,\n    dataset_id: str,\n    source_table: str,\n    model_name: str,\n) -> str:\n    \"\"\"\n    Train ARIMA_PLUS model in BigQuery using the BQML trainer, return full model path.\n    \"\"\"\n    # local imports: try importing trainer from logic_components; otherwise provide a fallback\n    try:\n        from logic_components.model_trainer import BQMLTrainer\n    except Exception:\n        from google.cloud import bigquery\n\n        class BQMLTrainer:\n            def __init__(self, project_id: str, dataset_id: str) -> None:\n                self.project_id = project_id\n                self.dataset_id = dataset_id\n                self.client = bigquery.Client(project=self.project_id)\n\n            def _full_model_path(self, model_name: str) -> str:\n                return f\"{self.project_id}.{self.dataset_id}.{model_name}\"\n\n            def _table_path(self, table_name: str) -> str:\n                return f\"{self.project_id}.{self.dataset_id}.{table_name}\"\n\n            def train_arima(self, source_table: str, model_name: str, time_col: str = \"trip_date\", value_col: str = \"total_trips\", horizon: int = 30) -> str:\n                full_model_path = self._full_model_path(model_name)\n                full_table_path = self._table_path(source_table)\n                query = f\"\"\"\n                CREATE OR REPLACE MODEL `{full_model_path}`\n                OPTIONS(\n                    model_type = 'ARIMA_PLUS',\n                    auto_arima = TRUE,\n                    time_series_timestamp_col = '{time_col}',\n                    time_series_data_col = '{value_col}',\n                    horizon = {horizon}\n                ) AS\n                SELECT\n                    {time_col},\n                    {value_col}\n                FROM `{full_table_path}`\n                ORDER BY {time_col};\n                \"\"\"\n                job = self.client.query(query)\n                job.result()\n                return full_model_path\n\n    trainer = BQMLTrainer(project_id=project_id, dataset_id=dataset_id)\n\n    model_path = trainer.train_arima(\n        source_table=source_table,\n        model_name=model_name,\n    )\n\n    print(f\"Trained model: {model_path}\")\n    return model_path\n\n"
+          ],
+          "image": "python:3.10"
+        }
+      }
+    }
+  },
+  "pipelineInfo": {
+    "description": "Load \u2192 Train ARIMA Default \u2192 Evaluate AIC (KFP v2)",
+    "name": "taxi-forecasting-full-pipeline-v2"
+  },
+  "root": {
+    "dag": {
+      "tasks": {
+        "data-loader-component-v2": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-data-loader-component-v2"
+          },
+          "inputs": {
+            "parameters": {
+              "cutoff_date": {
+                "componentInputParameter": "cutoff_date"
+              },
+              "dataset_id": {
+                "componentInputParameter": "dataset_id"
+              },
+              "project_id": {
+                "componentInputParameter": "project_id"
+              },
+              "source_table": {
+                "componentInputParameter": "source_table"
+              },
+              "test_table": {
+                "componentInputParameter": "test_table"
+              },
+              "train_table": {
+                "componentInputParameter": "train_table"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "data-loader-component-v2"
+          }
+        },
+        "evaluation-component-v2": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-evaluation-component-v2"
+          },
+          "dependentTasks": [
+            "train-arima-default-component-v2"
+          ],
+          "inputs": {
+            "parameters": {
+              "model_path": {
+                "taskOutputParameter": {
+                  "outputParameterKey": "Output",
+                  "producerTask": "train-arima-default-component-v2"
+                }
+              },
+              "project_id": {
+                "componentInputParameter": "project_id"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "evaluation-component-v2"
+          }
+        },
+        "train-arima-default-component-v2": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-train-arima-default-component-v2"
+          },
+          "dependentTasks": [
+            "data-loader-component-v2"
+          ],
+          "inputs": {
+            "parameters": {
+              "dataset_id": {
+                "componentInputParameter": "dataset_id"
+              },
+              "model_name": {
+                "componentInputParameter": "model_name"
+              },
+              "project_id": {
+                "componentInputParameter": "project_id"
+              },
+              "source_table": {
+                "componentInputParameter": "train_table"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "train-arima-default-component-v2"
+          }
+        }
+      }
+    },
+    "inputDefinitions": {
+      "parameters": {
+        "cutoff_date": {
+          "defaultValue": "2022-11-01",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "dataset_id": {
+          "defaultValue": "taxi_forecasting",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "model_name": {
+          "defaultValue": "daily_arima_default_model_v1",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "project_id": {
+          "defaultValue": "ml-ai-portfolio",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "source_table": {
+          "defaultValue": "aggregated_daily_2022",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "test_table": {
+          "defaultValue": "test_2022",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "train_table": {
+          "defaultValue": "train_2022",
+          "isOptional": true,
+          "parameterType": "STRING"
+        }
+      }
+    }
+  },
+  "schemaVersion": "2.1.0",
+  "sdkVersion": "kfp-2.0.0"
+}

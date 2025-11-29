@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Taxi Forecast App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 30px;
+            background: #fafafa;
+        }
+        h1 {
+            color: #222;
+        }
+        label {
+            font-weight: bold;
+        }
+        #results {
+            margin-top: 25px;
+            padding: 15px;
+            background: #fff;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+        table {
+            width: 50%;
+            margin-top: 15px;
+            border-collapse: collapse;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+            padding: 6px;
+            text-align: center;
+        }
+        th {
+            background: #333;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Taxi Forecast App</h1>
+
+<form id="forecast-form">
+    <label>Start Date (November 2022 only):</label><br>
+    <input type="date" id="start_date" required><br><br>
+
+    <label>Horizon (days, max 30):</label><br>
+    <input type="number" id="horizon" min="1" max="30" value="5" required><br><br>
+    <!-- Map forecasts option hidden for demo -->
+
+    <button type="submit">Forecast</button>
+</form>
+
+<!-- Retrain hidden for simple demo/resume UI. Use API endpoint if needed. -->
+
+<div id="results"></div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Set start_date min & default to today
+    const minDate = '2022-11-01';
+    const maxDate = '2022-11-30';
+    const startInput = document.getElementById('start_date');
+    startInput.setAttribute('min', minDate);
+    startInput.setAttribute('max', maxDate);
+    if (!startInput.value) startInput.value = minDate;
+});
+
+document.getElementById("forecast-form").addEventListener("submit", async function(e) {
+    e.preventDefault();
+
+    const startDate = document.getElementById("start_date").value;
+    const horizon = parseInt(document.getElementById("horizon").value);
+
+    const resultsDiv = document.getElementById("results");
+    resultsDiv.innerHTML = "Loading...";
+
+    const payload = {
+        start_date: startDate,
+        horizon: horizon
+    };
+
+    try {
+        const response = await fetch("/api/forecast", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload)
+        });
+
+        // First read as text, then try to parse JSON to handle server errors that return HTML/text
+        const text = await response.text();
+        let json;
+        try {
+            json = JSON.parse(text);
+        } catch (parseError) {
+            // If it's not valid JSON, show the raw text (likely an error page)
+            resultsDiv.innerHTML = `<p class="error">Request failed: ${text}</p>`;
+            return;
+        }
+
+        if (json.error) {
+            resultsDiv.innerHTML = `<p class="error">Error: ${json.error}</p>`;
+            return;
+        }
+
+        if (!json.data || json.data.length === 0) {
+            resultsDiv.innerHTML = "<p>No forecast data available for the selected date and horizon.</p>";
+            return;
+        }
+
+        let html = `
+            <h2>Results</h2>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>Forecast</th>
+                </tr>
+        `;
+
+        json.data.forEach(item => {
+            html += `
+                <tr>
+                    <td>${item.date}</td>
+                    <td>${item.forecast}</td>
+                </tr>
+            `;
+        });
+
+        html += "</table>";
+
+        resultsDiv.innerHTML = html;
+
+    } catch (error) {
+        console.error("Fetch error:", error);
+        resultsDiv.innerHTML = `<p class="error">Request failed: ${error}</p>`;
+    }
+});
+
+// Retrain form event listener removed from simple demo UI
+</script>
+
+</body>
+</html>
